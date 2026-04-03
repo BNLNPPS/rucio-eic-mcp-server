@@ -5,9 +5,13 @@ MCP server providing Rucio data management tools for the Electron Ion Collider
 (EIC) ePIC experiment. Exposes DIDs, replicas, RSEs, replication rules, and
 account usage via the Model Context Protocol.
 
-Authentication: X509 proxy certificate against the BNL Rucio instance.
+Authentication: X509 proxy certificate or username/password against BNL or
+JLab Rucio instances.
+
+Based on the Belle II rucio-mcp server by Cedric Serfon and Wouter Verkerke.
 """
 
+import argparse
 import os
 import re
 import time
@@ -26,12 +30,23 @@ from mcp.server.fastmcp import FastMCP
 
 CERT_PATH = os.getenv("X509_USER_PROXY", "/tmp/x509")
 RUCIO_ACCOUNT = os.getenv("RUCIO_ACCOUNT", "rucioddm")
+RUCIO_USERNAME = os.getenv("RUCIO_USERNAME", "")
+RUCIO_PASSWORD = os.getenv("RUCIO_PASSWORD", "")
+RUCIO_AUTH_TYPE = os.getenv("RUCIO_AUTH_TYPE", "x509")  # "x509" or "userpass"
 TOKEN_FILE_PATH = os.getenv("TOKEN_FILE_PATH", "/tmp/rucio_eic_token.txt")
 RUCIO_URL = os.getenv("RUCIO_URL", "https://blrucio.sdcc.bnl.gov:443")
-# Use system CA bundle by default; override with RUCIO_CA_BUNDLE if needed
-CA_BUNDLE = os.getenv("RUCIO_CA_BUNDLE", os.getenv("REQUESTS_CA_BUNDLE", True))
+# Use system CA bundle by default; override with RUCIO_CA_BUNDLE if needed.
+# Set to "false" to disable verification (not recommended).
+_ca_env = os.getenv("RUCIO_CA_BUNDLE", os.getenv("REQUESTS_CA_BUNDLE", ""))
+if _ca_env.lower() == "false":
+    CA_BUNDLE = False
+elif _ca_env:
+    CA_BUNDLE = _ca_env
+else:
+    CA_BUNDLE = True
 
-AUTH_URL = f"{RUCIO_URL}/auth/x509"
+AUTH_X509_URL = f"{RUCIO_URL}/auth/x509"
+AUTH_USERPASS_URL = f"{RUCIO_URL}/auth/userpass"
 DIDS_URL = f"{RUCIO_URL}/dids"
 ACCOUNT_URL = f"{RUCIO_URL}/accounts"
 RULES_URL = f"{RUCIO_URL}/rules"
@@ -108,18 +123,18 @@ def _make_rucio_request(
         return {"error": str(e)}
 
 
-def _get_token() -> dict:
-    """
-    Authenticate with Rucio via X509 proxy and cache the token.
+# ---------------------------------------------------------------------------
+# Authentication — X509 or userpass
+# ---------------------------------------------------------------------------
 
-    The token is stored in TOKEN_FILE_PATH and refreshed when older than 1 hour.
-    """
+def _get_token_x509() -> dict:
+    """Authenticate with Rucio via X509 proxy certificate."""
     headers = {"X-Rucio-Account": RUCIO_ACCOUNT}
     try:
         cert = (CERT_PATH, CERT_PATH)
         response = requests.get(
-            AUTH_URL, headers=headers, verify=CA_BUNDLE, stream=True, cert=cert,
-            timeout=15,
+            AUTH_X509_URL, headers=headers, verify=CA_BUNDLE, stream=True,
+            cert=cert, timeout=15,
         )
         response.raise_for_status()
         token = response.headers.get("X-Rucio-Auth-Token")
@@ -129,7 +144,36 @@ def _get_token() -> dict:
             f.write(token)
         return {"status": response.status_code, "message": "Token stored successfully."}
     except requests.exceptions.RequestException as e:
-        return {"error": f"Rucio authentication failed: {e}"}
+        return {"error": f"Rucio X509 authentication failed: {e}"}
+
+
+def _get_token_userpass() -> dict:
+    """Authenticate with Rucio via username/password."""
+    headers = {
+        "X-Rucio-Account": RUCIO_ACCOUNT,
+        "X-Rucio-Username": RUCIO_USERNAME,
+        "X-Rucio-Password": RUCIO_PASSWORD,
+    }
+    try:
+        response = requests.get(
+            AUTH_USERPASS_URL, headers=headers, verify=CA_BUNDLE, timeout=15,
+        )
+        response.raise_for_status()
+        token = response.headers.get("X-Rucio-Auth-Token")
+        if not token:
+            return {"error": "Token not found in Rucio response headers."}
+        with open(TOKEN_FILE_PATH, "w") as f:
+            f.write(token)
+        return {"status": response.status_code, "message": "Token stored successfully."}
+    except requests.exceptions.RequestException as e:
+        return {"error": f"Rucio userpass authentication failed: {e}"}
+
+
+def _get_token() -> dict:
+    """Obtain a Rucio auth token using the configured auth method."""
+    if RUCIO_AUTH_TYPE == "userpass":
+        return _get_token_userpass()
+    return _get_token_x509()
 
 
 def _get_token_from_file() -> str:
@@ -227,6 +271,7 @@ def list_scopes() -> dict:
     Fetch all available scopes from the Rucio instance.
 
     Returns the list of scopes (e.g., group.EIC, group.daq, user.wenaus, ...).
+    Use this first to discover what data is available on the server.
     """
     try:
         headers = _rucio_headers()
@@ -330,13 +375,13 @@ def get_account_usage(account: str, rse: str) -> dict:
     return _make_rucio_request(url, headers=headers)
 
 
-@mcp.tool(description="List all Rucio Storage Elements (RSEs) for EIC.")
+@mcp.tool(description="List all Rucio Storage Elements (RSEs).")
 def list_rses() -> dict:
     """
     Fetch the list of all RSEs (Rucio Storage Elements).
 
     Returns RSE names, availability, and basic configuration.
-    Relevant EIC RSEs include BNL_SDCC_EIC, JLAB_EIC, etc.
+    EIC RSEs include BNL_SDCC_EIC, JLAB_EIC, etc.
     """
     try:
         headers = _rucio_headers()
@@ -443,13 +488,15 @@ def extract_scope(did: str) -> dict[str, str]:
 
 def main():
     """Run the MCP server. Supports stdio (for pandabot) and SSE transports."""
-    import sys
-
-    transport = "stdio"
-    if "--sse" in sys.argv:
-        transport = "sse"
-
-    mcp.run(transport=transport)
+    parser = argparse.ArgumentParser(description="Rucio EIC MCP Server")
+    parser.add_argument(
+        "--transport",
+        choices=["stdio", "sse"],
+        default="stdio",
+        help="Transport protocol (default: stdio)",
+    )
+    args = parser.parse_args()
+    mcp.run(transport=args.transport)
 
 
 if __name__ == "__main__":

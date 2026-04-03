@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rucio-eic-mcp-server"
+version = "0.1.0"
+description = "Rucio MCP server for EIC/ePIC data management"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "mcp[cli]>=1.10.1",
+    "requests>=2.28.0",
+]
+
+[project.scripts]
+rucio-eic-mcp = "rucio_eic_mcp_server:main"

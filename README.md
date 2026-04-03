@@ -34,7 +34,8 @@ Two methods supported, selected via `RUCIO_AUTH_TYPE`:
 export RUCIO_AUTH_TYPE=x509          # default
 export X509_USER_PROXY=/tmp/x509     # path to proxy cert
 export RUCIO_ACCOUNT=rucioddm
-export RUCIO_URL=https://blrucio.sdcc.bnl.gov:443
+export RUCIO_URL=https://nprucio01.sdcc.bnl.gov:443
+# Account 'panda' has X509 identities for IDDS/PanDA service certs
 ```
 
 ### Username/password (for JLab Rucio)
@@ -51,7 +52,7 @@ export RUCIO_URL=https://rucio.jlab.org:443
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `RUCIO_URL` | `https://blrucio.sdcc.bnl.gov:443` | Rucio server URL |
+| `RUCIO_URL` | `https://nprucio01.sdcc.bnl.gov:443` | Rucio server URL |
 | `RUCIO_AUTH_TYPE` | `x509` | Auth method: `x509` or `userpass` |
 | `RUCIO_ACCOUNT` | `rucioddm` | Rucio account name |
 | `X509_USER_PROXY` | `/tmp/x509` | Path to X509 proxy cert (x509 auth) |
@@ -86,10 +87,10 @@ rucio-eic-mcp --transport sse    # SSE
 
 ## Setup for sys admins
 
-For BNL (`blrucio.sdcc.bnl.gov`):
+For BNL (`nprucio01.sdcc.bnl.gov`):
 1. X509 service certificate or auto-renewed proxy
 2. Rucio account with read access to EIC scopes (`group.EIC`, `group.daq`, `user.*`)
-3. Network access to `blrucio.sdcc.bnl.gov:443`
+3. Network access to `nprucio01.sdcc.bnl.gov:443`
 
 For JLab (`rucio.jlab.org`):
 1. Rucio username/password credentials

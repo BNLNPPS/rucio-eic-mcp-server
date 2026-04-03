@@ -34,7 +34,7 @@ RUCIO_USERNAME = os.getenv("RUCIO_USERNAME", "")
 RUCIO_PASSWORD = os.getenv("RUCIO_PASSWORD", "")
 RUCIO_AUTH_TYPE = os.getenv("RUCIO_AUTH_TYPE", "x509")  # "x509" or "userpass"
 TOKEN_FILE_PATH = os.getenv("TOKEN_FILE_PATH", "/tmp/rucio_eic_token.txt")
-RUCIO_URL = os.getenv("RUCIO_URL", "https://blrucio.sdcc.bnl.gov:443")
+RUCIO_URL = os.getenv("RUCIO_URL", "https://nprucio01.sdcc.bnl.gov:443")
 # Use system CA bundle by default; override with RUCIO_CA_BUNDLE if needed.
 # Set to "false" to disable verification (not recommended).
 _ca_env = os.getenv("RUCIO_CA_BUNDLE", os.getenv("REQUESTS_CA_BUNDLE", ""))

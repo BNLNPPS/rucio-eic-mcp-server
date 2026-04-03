@@ -1,0 +1,456 @@
+"""
+Rucio MCP Server for EIC/ePIC
+
+MCP server providing Rucio data management tools for the Electron Ion Collider
+(EIC) ePIC experiment. Exposes DIDs, replicas, RSEs, replication rules, and
+account usage via the Model Context Protocol.
+
+Authentication: X509 proxy certificate against the BNL Rucio instance.
+"""
+
+import os
+import re
+import time
+from datetime import datetime
+from json import loads
+from typing import Any, Generator, Optional, Union
+
+import requests
+
+from mcp.server.fastmcp import FastMCP
+
+
+# ---------------------------------------------------------------------------
+# Configuration from environment
+# ---------------------------------------------------------------------------
+
+CERT_PATH = os.getenv("X509_USER_PROXY", "/tmp/x509")
+RUCIO_ACCOUNT = os.getenv("RUCIO_ACCOUNT", "rucioddm")
+TOKEN_FILE_PATH = os.getenv("TOKEN_FILE_PATH", "/tmp/rucio_eic_token.txt")
+RUCIO_URL = os.getenv("RUCIO_URL", "https://blrucio.sdcc.bnl.gov:443")
+# Use system CA bundle by default; override with RUCIO_CA_BUNDLE if needed
+CA_BUNDLE = os.getenv("RUCIO_CA_BUNDLE", os.getenv("REQUESTS_CA_BUNDLE", True))
+
+AUTH_URL = f"{RUCIO_URL}/auth/x509"
+DIDS_URL = f"{RUCIO_URL}/dids"
+ACCOUNT_URL = f"{RUCIO_URL}/accounts"
+RULES_URL = f"{RUCIO_URL}/rules"
+RSES_URL = f"{RUCIO_URL}/rses"
+REPLICAS_URL = f"{RUCIO_URL}/replicas"
+
+
+# ---------------------------------------------------------------------------
+# Response parsing helpers
+# ---------------------------------------------------------------------------
+
+def _load_json_data(response: requests.Response) -> Generator[Any, Any, Any]:
+    """Parse streaming JSON responses (application/x-json-stream)."""
+    if (
+        "content-type" in response.headers
+        and response.headers["content-type"] == "application/x-json-stream"
+    ):
+        for line in response.iter_lines():
+            if line:
+                yield _parse_response(line)
+    else:
+        if response.text:
+            yield response.text
+
+
+def _datetime_parser(dct: dict[Any, Any]) -> dict[Any, Any]:
+    """JSON object_hook that converts '... UTC' strings to datetime objects."""
+    for k, v in list(dct.items()):
+        if isinstance(v, str) and re.search(" UTC", v):
+            try:
+                dct[k] = datetime.strptime(v, "%Y-%m-%d %H:%M:%S UTC")
+            except Exception:
+                pass
+    return dct
+
+
+def _parse_response(data: Union[str, bytes, bytearray]) -> Any:
+    """Decode and parse a JSON response line."""
+    if isinstance(data, (bytes, bytearray)):
+        data = data.decode("utf-8")
+    return loads(data, object_hook=_datetime_parser)
+
+
+# ---------------------------------------------------------------------------
+# Rucio HTTP helpers
+# ---------------------------------------------------------------------------
+
+def _make_rucio_request(
+    url: str,
+    method: str = "GET",
+    headers: dict = None,
+    payload: dict = None,
+    params: dict = None,
+) -> dict:
+    """
+    Make a request to the Rucio REST API.
+
+    Returns dict with 'status' and 'data' on success, or 'error' on failure.
+    """
+    if headers is None:
+        headers = {}
+    try:
+        response = requests.request(
+            method, url, headers=headers, json=payload, params=params,
+            verify=CA_BUNDLE, timeout=30,
+        )
+        response.raise_for_status()
+        if response.headers.get("Content-Type") == "application/x-json-stream":
+            return {"status": response.status_code, "data": list(_load_json_data(response))}
+        if response.text:
+            return {"status": response.status_code, "data": _parse_response(response.text)}
+        return {"status": response.status_code, "data": None}
+    except requests.exceptions.RequestException as e:
+        return {"error": str(e)}
+
+
+def _get_token() -> dict:
+    """
+    Authenticate with Rucio via X509 proxy and cache the token.
+
+    The token is stored in TOKEN_FILE_PATH and refreshed when older than 1 hour.
+    """
+    headers = {"X-Rucio-Account": RUCIO_ACCOUNT}
+    try:
+        cert = (CERT_PATH, CERT_PATH)
+        response = requests.get(
+            AUTH_URL, headers=headers, verify=CA_BUNDLE, stream=True, cert=cert,
+            timeout=15,
+        )
+        response.raise_for_status()
+        token = response.headers.get("X-Rucio-Auth-Token")
+        if not token:
+            return {"error": "Token not found in Rucio response headers."}
+        with open(TOKEN_FILE_PATH, "w") as f:
+            f.write(token)
+        return {"status": response.status_code, "message": "Token stored successfully."}
+    except requests.exceptions.RequestException as e:
+        return {"error": f"Rucio authentication failed: {e}"}
+
+
+def _get_token_from_file() -> str:
+    """
+    Retrieve the cached Rucio auth token, refreshing if expired (>1 hour).
+
+    Raises RuntimeError if authentication fails.
+    """
+    refresh = False
+    if not os.path.exists(TOKEN_FILE_PATH):
+        refresh = True
+    else:
+        stat = os.stat(TOKEN_FILE_PATH)
+        if time.time() - stat.st_mtime > 3600:
+            refresh = True
+
+    if refresh:
+        result = _get_token()
+        if "error" in result:
+            raise RuntimeError(result["error"])
+
+    with open(TOKEN_FILE_PATH, "r") as f:
+        token = f.read().strip()
+    if not token:
+        raise RuntimeError("Token file is empty. Rucio authentication may have failed.")
+    return token
+
+
+def _rucio_headers(content_type: str = "application/json") -> dict:
+    """Build standard Rucio API headers with a valid auth token."""
+    token = _get_token_from_file()
+    return {
+        "X-Rucio-Auth-Token": token,
+        "Content-Type": content_type,
+    }
+
+
+# ---------------------------------------------------------------------------
+# EIC/ePIC scope extraction
+# ---------------------------------------------------------------------------
+
+def _extract_scope_eic(did: str) -> dict[str, str]:
+    """
+    Extract scope and name from an EIC/ePIC DID string.
+
+    EIC naming conventions:
+    - group.EIC:dataset_name       — ePIC production datasets
+    - group.daq:swf.NNNNNN.run    — streaming workflow / DAQ datasets
+    - user.<username>:name         — user datasets
+    - group.<group>:name           — group datasets
+
+    If the DID contains a colon, it's already scope:name.
+    Otherwise, infer from path conventions.
+    """
+    # Already has explicit scope
+    if ":" in did:
+        scope, name = did.split(":", 1)
+        return {"scope": scope, "name": name}
+
+    # Path-based inference for EIC conventions
+    if did.startswith("/eic/") or did.startswith("/EIC/"):
+        parts = did.split("/")
+        # /eic/user/<username>/... → user.<username>
+        if len(parts) > 3 and parts[2] == "user":
+            return {"scope": f"user.{parts[3]}", "name": did}
+        # /eic/group/<group>/... → group.<group>
+        if len(parts) > 3 and parts[2] == "group":
+            return {"scope": f"group.{parts[3]}", "name": did}
+        return {"scope": "group.EIC", "name": did}
+
+    # Streaming workflow datasets
+    if did.startswith("swf."):
+        return {"scope": "group.daq", "name": did}
+
+    # Default to group.EIC for unrecognized patterns
+    return {"scope": "group.EIC", "name": did}
+
+
+# ---------------------------------------------------------------------------
+# MCP Server
+# ---------------------------------------------------------------------------
+
+mcp = FastMCP(
+    "rucio-eic",
+    stateless_http=True,
+    json_response=True,
+    host="0.0.0.0",
+    port=8000,
+)
+
+
+@mcp.tool(description="List available Rucio scopes.")
+def list_scopes() -> dict:
+    """
+    Fetch all available scopes from the Rucio instance.
+
+    Returns the list of scopes (e.g., group.EIC, group.daq, user.wenaus, ...).
+    """
+    try:
+        headers = _rucio_headers()
+    except RuntimeError as e:
+        return {"error": str(e)}
+
+    return _make_rucio_request(f"{RUCIO_URL}/scopes", headers=headers)
+
+
+@mcp.tool(description="Search for DIDs (datasets/containers) within a scope.")
+def list_dids(scope: str, type: str = "COLLECTION") -> dict:
+    """
+    Search for DIDs (Data Identifiers) within a given scope.
+
+    Args:
+        scope: Rucio scope (e.g., 'group.EIC', 'group.daq', 'user.wenaus').
+        type: DID type filter — COLLECTION (datasets+containers), DATASET, CONTAINER, FILE.
+              Default: COLLECTION.
+    """
+    try:
+        headers = _rucio_headers()
+    except RuntimeError as e:
+        return {"error": str(e)}
+
+    url = f"{DIDS_URL}/{scope}/dids/search?type={type}"
+    return _make_rucio_request(url, headers=headers)
+
+
+@mcp.tool(description="List files within a Rucio dataset or container.")
+def list_files(scope: str, name: str) -> dict:
+    """
+    Fetch the file listing for a Rucio DID (dataset or container).
+
+    Args:
+        scope: Rucio scope (e.g., 'group.EIC').
+        name: DID name (e.g., 'epic.26.02.0.ePIC_craterlake.p1001.e1.s1.r1').
+    """
+    try:
+        headers = _rucio_headers("application/x-json-stream")
+    except RuntimeError as e:
+        return {"error": str(e)}
+
+    url = f"{DIDS_URL}/bulkfiles"
+    payload = {"dids": [{"scope": scope, "name": name}]}
+    return _make_rucio_request(url, method="POST", headers=headers, payload=payload)
+
+
+@mcp.tool(description="Get DID details including type, size, file count, and custom fields.")
+def get_did_metadata(scope: str, name: str) -> dict:
+    """
+    Fetch full details for a DID (Data Identifier).
+
+    Args:
+        scope: Rucio scope.
+        name: DID name.
+
+    Returns type, creation date, file count, total size, and any custom fields
+    set on the DID.
+    """
+    try:
+        headers = _rucio_headers()
+    except RuntimeError as e:
+        return {"error": str(e)}
+
+    url = f"{DIDS_URL}/{scope}/{name}/meta?plugin=JSON"
+    return _make_rucio_request(url, headers=headers)
+
+
+@mcp.tool(description="Get storage quota limits for a Rucio account.")
+def get_account_limits(account: str) -> dict:
+    """
+    Fetch account storage limits across all RSEs.
+
+    Args:
+        account: Rucio account name (e.g., 'wenaus', 'rucioddm').
+    """
+    try:
+        headers = _rucio_headers()
+    except RuntimeError as e:
+        return {"error": str(e)}
+
+    url = f"{ACCOUNT_URL}/{account}/limits"
+    return _make_rucio_request(url, headers=headers)
+
+
+@mcp.tool(description="Get storage usage for a Rucio account at a specific RSE.")
+def get_account_usage(account: str, rse: str) -> dict:
+    """
+    Fetch storage usage for an account at a specific RSE.
+
+    Args:
+        account: Rucio account name.
+        rse: RSE name (e.g., 'BNL_SDCC_EIC', 'JLAB_EIC').
+    """
+    try:
+        headers = _rucio_headers()
+    except RuntimeError as e:
+        return {"error": str(e)}
+
+    url = f"{ACCOUNT_URL}/{account}/usage/local/{rse}"
+    return _make_rucio_request(url, headers=headers)
+
+
+@mcp.tool(description="List all Rucio Storage Elements (RSEs) for EIC.")
+def list_rses() -> dict:
+    """
+    Fetch the list of all RSEs (Rucio Storage Elements).
+
+    Returns RSE names, availability, and basic configuration.
+    Relevant EIC RSEs include BNL_SDCC_EIC, JLAB_EIC, etc.
+    """
+    try:
+        headers = _rucio_headers()
+    except RuntimeError as e:
+        return {"error": str(e)}
+
+    return _make_rucio_request(RSES_URL, headers=headers)
+
+
+@mcp.tool(description="Get storage usage statistics for a specific RSE.")
+def get_rse_usage(rse: str) -> dict:
+    """
+    Fetch usage statistics for an RSE (used, free, total bytes).
+
+    Args:
+        rse: RSE name (e.g., 'BNL_SDCC_EIC').
+    """
+    try:
+        headers = _rucio_headers("application/x-json-stream")
+    except RuntimeError as e:
+        return {"error": str(e)}
+
+    url = f"{RSES_URL}/{rse}/usage"
+    return _make_rucio_request(url, headers=headers)
+
+
+@mcp.tool(description="List replication rules with optional filters (account, state).")
+def list_rules(filters: Optional[dict[str, str]] = None) -> dict:
+    """
+    Fetch replication rules, optionally filtered.
+
+    Args:
+        filters: Optional dict of filters:
+            - account: Filter by Rucio account.
+            - state: Filter by rule state — 'O' (OK), 'R' (Replicating), 'S' (Stuck).
+            Example: {"account": "wenaus", "state": "R"}
+    """
+    try:
+        headers = _rucio_headers("application/x-json-stream")
+    except RuntimeError as e:
+        return {"error": str(e)}
+
+    params = filters if filters else {}
+    return _make_rucio_request(RULES_URL, headers=headers, params=params)
+
+
+@mcp.tool(description="Get replica lock details for a replication rule.")
+def get_rule_locks(rule_id: str) -> dict:
+    """
+    Fetch replica locks associated with a replication rule.
+
+    Args:
+        rule_id: The Rucio rule ID (UUID).
+    """
+    try:
+        headers = _rucio_headers()
+    except RuntimeError as e:
+        return {"error": str(e)}
+
+    url = f"{RULES_URL}/{rule_id}/locks"
+    return _make_rucio_request(url, headers=headers)
+
+
+@mcp.tool(description="Find where file replicas are located across RSEs.")
+def list_file_replicas(dids: list[dict[str, str]]) -> dict:
+    """
+    Fetch replica locations for a list of DIDs.
+
+    Args:
+        dids: List of DIDs, each a dict with 'scope' and 'name'.
+              Example: [{"scope": "group.EIC", "name": "file.root"}]
+
+    Returns replica locations (RSEs and PFNs) for each file.
+    """
+    try:
+        headers = _rucio_headers("application/x-json-stream")
+    except RuntimeError as e:
+        return {"error": str(e)}
+
+    url = f"{REPLICAS_URL}/list"
+    payload = {"dids": dids}
+    return _make_rucio_request(url, method="POST", headers=headers, payload=payload)
+
+
+@mcp.tool(description="Extract scope and name from an EIC DID string.")
+def extract_scope(did: str) -> dict[str, str]:
+    """
+    Parse an EIC/ePIC DID string into scope and name components.
+
+    Handles:
+    - Explicit scope:name format (e.g., 'group.EIC:dataset_name')
+    - EIC path conventions (/eic/user/..., /eic/group/...)
+    - SWF dataset names (swf.NNNNNN.run)
+
+    Args:
+        did: The DID string to parse.
+    """
+    return _extract_scope_eic(did)
+
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
+
+def main():
+    """Run the MCP server. Supports stdio (for pandabot) and SSE transports."""
+    import sys
+
+    transport = "stdio"
+    if "--sse" in sys.argv:
+        transport = "sse"
+
+    mcp.run(transport=transport)
+
+
+if __name__ == "__main__":
+    main()

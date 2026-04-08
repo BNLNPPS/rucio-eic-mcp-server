@@ -281,13 +281,16 @@ def list_scopes() -> dict:
     return _make_rucio_request(f"{RUCIO_URL}/scopes", headers=headers)
 
 
-@mcp.tool(description="Search for DIDs (datasets/containers) within a scope.")
-def list_dids(scope: str, type: str = "COLLECTION") -> dict:
+@mcp.tool(description="Search for DIDs (datasets/containers) within a scope, optionally filtered by a name pattern with wildcards.")
+def list_dids(scope: str, name: Optional[str] = None, type: str = "COLLECTION") -> dict:
     """
     Search for DIDs (Data Identifiers) within a given scope.
 
     Args:
-        scope: Rucio scope (e.g., 'group.EIC', 'group.daq', 'user.wenaus').
+        scope: Rucio scope (e.g., 'group.EIC', 'group.daq', 'user.wenaus', 'epic').
+        name: Optional name pattern filter. Supports Rucio wildcards '*' and '?'.
+              Example: '*26.03.1*' matches any DID name containing '26.03.1'.
+              Equivalent to the CLI: rucio did list "scope:pattern".
         type: DID type filter — COLLECTION (datasets+containers), DATASET, CONTAINER, FILE.
               Default: COLLECTION.
     """
@@ -296,8 +299,11 @@ def list_dids(scope: str, type: str = "COLLECTION") -> dict:
     except RuntimeError as e:
         return {"error": str(e)}
 
-    url = f"{DIDS_URL}/{scope}/dids/search?type={type}"
-    return _make_rucio_request(url, headers=headers)
+    url = f"{DIDS_URL}/{scope}/dids/search"
+    params = {"type": type}
+    if name:
+        params["name"] = name
+    return _make_rucio_request(url, headers=headers, params=params)
 
 
 @mcp.tool(description="List files within a Rucio dataset or container.")

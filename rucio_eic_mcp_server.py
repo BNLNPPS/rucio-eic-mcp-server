@@ -20,6 +20,7 @@ from json import loads
 from typing import Any, Generator, Optional, Union
 
 import requests
+from urllib.parse import quote
 
 from mcp.server.fastmcp import FastMCP
 
@@ -202,12 +203,13 @@ def _get_token_from_file() -> str:
     return token
 
 
-def _rucio_headers(content_type: str = "application/json") -> dict:
+def _rucio_headers(accept: str = "application/json") -> dict:
     """Build standard Rucio API headers with a valid auth token."""
     token = _get_token_from_file()
     return {
         "X-Rucio-Auth-Token": token,
-        "Content-Type": content_type,
+        "Content-Type": "application/json",
+        "Accept": accept,
     }
 
 
@@ -342,7 +344,7 @@ def get_did_metadata(scope: str, name: str) -> dict:
     except RuntimeError as e:
         return {"error": str(e)}
 
-    url = f"{DIDS_URL}/{scope}/{name}/meta?plugin=JSON"
+    url = f"{DIDS_URL}/{quote(scope, safe='')}/{quote(name, safe='')}/meta?plugin=JSON"
     return _make_rucio_request(url, headers=headers)
 
 

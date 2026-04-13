@@ -112,7 +112,7 @@ def _make_rucio_request(
     try:
         response = requests.request(
             method, url, headers=headers, json=payload, params=params,
-            verify=CA_BUNDLE, timeout=30,
+            verify=CA_BUNDLE, timeout=60,
         )
         response.raise_for_status()
         if response.headers.get("Content-Type") == "application/x-json-stream":
@@ -327,6 +327,28 @@ def list_files(scope: str, name: str) -> dict:
     return _make_rucio_request(url, method="POST", headers=headers, payload=payload)
 
 
+@mcp.tool(description="List immediate children of a Rucio container or dataset.")
+def list_content(scope: str, name: str) -> dict:
+    """
+    List the child DIDs within a container or dataset (one level).
+
+    For containers: returns child datasets and/or containers.
+    For datasets: returns child files.
+    Use list_files for a recursive listing of all files.
+
+    Args:
+        scope: Rucio scope (e.g., 'epic', 'group.EIC').
+        name: DID name (may contain slashes, e.g., '/RECO/26.03.1/...').
+    """
+    try:
+        headers = _rucio_headers("application/x-json-stream")
+    except RuntimeError as e:
+        return {"error": str(e)}
+
+    url = f"{DIDS_URL}/{quote(scope, safe='')}/{quote(name, safe='')}/dids"
+    return _make_rucio_request(url, headers=headers)
+
+
 @mcp.tool(description="Get DID details including type, size, file count, and custom fields.")
 def get_did_metadata(scope: str, name: str) -> dict:
     """
@@ -344,7 +366,7 @@ def get_did_metadata(scope: str, name: str) -> dict:
     except RuntimeError as e:
         return {"error": str(e)}
 
-    url = f"{DIDS_URL}/{quote(scope, safe='')}/{quote(name, safe='')}/meta?plugin=JSON"
+    url = f"{DIDS_URL}/{quote(scope, safe='')}/{quote(name, safe='')}/meta"
     return _make_rucio_request(url, headers=headers)
 
 

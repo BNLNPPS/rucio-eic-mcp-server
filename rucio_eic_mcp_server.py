@@ -306,11 +306,16 @@ def list_dids(
               Note: COLLECTION (datasets+containers) is not supported by all Rucio
               versions; DATASET is the reliable default. Use ALL to span everything
               (can be huge — combine with name or filters).
-        filters: Optional dict of metadata key=value filters. Any DID metadata field
-              set on the server can be used (e.g., {"pwg": "inclusive"},
-              {"datatype": "RECO", "campaign": "26.03"}). The server silently
-              returns 0 matches for unpopulated keys — call get_did_metadata on a
-              sample DID first to see which fields are populated for the scope.
+        filters: Optional dict of metadata key=value filters. Values may use
+              Rucio wildcards ('*' and '?'). Examples of populated ePIC keys
+              (campaign 26.03.x and later): requester_pwg (inclusive, exclusive,
+              semi-inclusive, jets, ...), generator (beagle, pythia8, ...),
+              software_release ('26.03.*'), data_level (reconstruction,
+              simulation), electron_beam_energy_gev, ion_beam_energy_gev,
+              ion_species, geometry_config, q2_min_gev2, q2_max_gev2,
+              is_background_mixed. Run get_did_metadata on a sample 26.03.x DID
+              (plugin='ALL') to see the full schema. The server silently returns
+              0 matches for unpopulated keys — pre-26.03 DIDs have none.
         long: If True, return full DID info (type, bytes, length, ...) instead of
               just name. Useful when pairing a metadata search with inspection.
     """
@@ -395,17 +400,23 @@ def list_content(scope: str, name: str) -> dict:
     return _make_rucio_request(url, headers=headers)
 
 
-@mcp.tool(description="Get DID details including type, size, file count, and custom fields.")
-def get_did_metadata(scope: str, name: str) -> dict:
+@mcp.tool(description="Get DID details — system fields plus any custom physics metadata (pwg, generator, software_release, beam energies, Q2, ion species, ...).")
+def get_did_metadata(scope: str, name: str, plugin: str = "ALL") -> dict:
     """
-    Fetch full details for a DID (Data Identifier).
+    Fetch full details for a DID (Data Identifier), merging system columns
+    with custom physics metadata.
 
     Args:
         scope: Rucio scope.
         name: DID name.
-
-    Returns type, creation date, file count, total size, and any custom fields
-    set on the DID.
+        plugin: Metadata plugin selector. Default "ALL" returns both Rucio
+            system columns and custom JSON metadata (requester_pwg, generator,
+            software_release, electron_beam_energy_gev, ion_beam_energy_gev,
+            ion_species, geometry_config, q2_min_gev2, q2_max_gev2,
+            data_level, is_background_mixed, ...). Other options:
+            "DID_COLUMN" (system columns only), "POSTGRES_JSON" (custom JSON
+            only). Availability of custom metadata depends on server config
+            and campaign — ePIC populates it from 26.03.x onward.
     """
     try:
         headers = _rucio_headers()
@@ -413,7 +424,8 @@ def get_did_metadata(scope: str, name: str) -> dict:
         return {"error": str(e)}
 
     url = f"{DIDS_URL}/{quote(scope, safe='')}/{quote(name, safe='')}/meta"
-    return _make_rucio_request(url, headers=headers)
+    params = {"plugin": plugin} if plugin else None
+    return _make_rucio_request(url, headers=headers, params=params)
 
 
 @mcp.tool(description="Get storage quota limits for a Rucio account.")

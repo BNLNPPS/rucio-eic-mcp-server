@@ -7,7 +7,7 @@ MCP server providing [Rucio](https://rucio.cern.ch/) data management tools for t
 | Tool | Description |
 |------|-------------|
 | `list_scopes` | List available Rucio scopes (discover what's on the server) |
-| `list_dids` | Search for datasets/containers within a scope |
+| `list_dids` | Search for datasets/containers within a scope (name pattern + metadata filters) |
 | `list_files` | List files within a dataset or container |
 | `get_did_metadata` | Get DID details (type, size, file count, custom fields) |
 | `get_account_limits` | Get storage quota limits for an account |

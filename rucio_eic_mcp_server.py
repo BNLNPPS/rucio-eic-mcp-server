@@ -283,18 +283,34 @@ def list_scopes() -> dict:
     return _make_rucio_request(f"{RUCIO_URL}/scopes", headers=headers)
 
 
-@mcp.tool(description="Search for DIDs (datasets/containers) within a scope, optionally filtered by a name pattern with wildcards.")
-def list_dids(scope: str, name: Optional[str] = None, type: str = "COLLECTION") -> dict:
+@mcp.tool(description="Search for DIDs (datasets/containers) within a scope, filtered by name pattern and/or metadata key=value filters.")
+def list_dids(
+    scope: str,
+    name: Optional[str] = None,
+    type: str = "COLLECTION",
+    filters: Optional[dict[str, str]] = None,
+    long: bool = False,
+) -> dict:
     """
-    Search for DIDs (Data Identifiers) within a given scope.
+    Search for DIDs (Data Identifiers) within a given scope, with optional
+    name-pattern and metadata-filter criteria.
+
+    Equivalent to the Rucio CLI:
+        rucio did list "scope:pattern" --filter "key=value,key2=value2"
 
     Args:
         scope: Rucio scope (e.g., 'group.EIC', 'group.daq', 'user.wenaus', 'epic').
         name: Optional name pattern filter. Supports Rucio wildcards '*' and '?'.
               Example: '*26.03.1*' matches any DID name containing '26.03.1'.
-              Equivalent to the CLI: rucio did list "scope:pattern".
         type: DID type filter — COLLECTION (datasets+containers), DATASET, CONTAINER, FILE.
               Default: COLLECTION.
+        filters: Optional dict of metadata key=value filters. Any DID metadata field
+              set on the server can be used (e.g., {"pwg": "inclusive"},
+              {"datatype": "RECO", "campaign": "26.03"}). Unknown keys are rejected
+              by the server. Use get_did_metadata on a sample DID to discover what
+              fields are populated for the scope.
+        long: If True, return full DID info (type, bytes, length, ...) instead of
+              just name. Useful when pairing a metadata search with inspection.
     """
     try:
         headers = _rucio_headers()
@@ -302,9 +318,16 @@ def list_dids(scope: str, name: Optional[str] = None, type: str = "COLLECTION") 
         return {"error": str(e)}
 
     url = f"{DIDS_URL}/{scope}/dids/search"
-    params = {"type": type}
+    params: dict[str, str] = {"type": type}
     if name:
         params["name"] = name
+    if long:
+        params["long"] = "True"
+    if filters:
+        for k, v in filters.items():
+            if k in params:
+                return {"error": f"filter key '{k}' conflicts with a reserved parameter"}
+            params[k] = v
     return _make_rucio_request(url, headers=headers, params=params)
 
 

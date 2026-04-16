@@ -287,7 +287,7 @@ def list_scopes() -> dict:
 def list_dids(
     scope: str,
     name: Optional[str] = None,
-    type: str = "COLLECTION",
+    type: str = "DATASET",
     filters: Optional[dict[str, str]] = None,
     long: bool = False,
 ) -> dict:
@@ -302,18 +302,20 @@ def list_dids(
         scope: Rucio scope (e.g., 'group.EIC', 'group.daq', 'user.wenaus', 'epic').
         name: Optional name pattern filter. Supports Rucio wildcards '*' and '?'.
               Example: '*26.03.1*' matches any DID name containing '26.03.1'.
-        type: DID type filter — COLLECTION (datasets+containers), DATASET, CONTAINER, FILE.
-              Default: COLLECTION.
+        type: DID type filter — DATASET (default), CONTAINER, FILE, or ALL.
+              Note: COLLECTION (datasets+containers) is not supported by all Rucio
+              versions; DATASET is the reliable default. Use ALL to span everything
+              (can be huge — combine with name or filters).
         filters: Optional dict of metadata key=value filters. Any DID metadata field
               set on the server can be used (e.g., {"pwg": "inclusive"},
-              {"datatype": "RECO", "campaign": "26.03"}). Unknown keys are rejected
-              by the server. Use get_did_metadata on a sample DID to discover what
-              fields are populated for the scope.
+              {"datatype": "RECO", "campaign": "26.03"}). The server silently
+              returns 0 matches for unpopulated keys — call get_did_metadata on a
+              sample DID first to see which fields are populated for the scope.
         long: If True, return full DID info (type, bytes, length, ...) instead of
               just name. Useful when pairing a metadata search with inspection.
     """
     try:
-        headers = _rucio_headers()
+        headers = _rucio_headers("application/x-json-stream")
     except RuntimeError as e:
         return {"error": str(e)}
 

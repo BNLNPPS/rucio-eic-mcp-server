@@ -330,7 +330,28 @@ def list_dids(
             if k in params:
                 return {"error": f"filter key '{k}' conflicts with a reserved parameter"}
             params[k] = v
-    return _make_rucio_request(url, headers=headers, params=params)
+    result = _make_rucio_request(url, headers=headers, params=params)
+
+    # Auto-retry: if the caller asked for CONTAINER with a name or filter
+    # and the server returned an empty list, retry as DATASET. Many Rucio
+    # scopes (notably JLab's 'epic') hold flat datasets, not containers,
+    # so a CONTAINER search silently returns nothing.
+    if (
+        type == "CONTAINER"
+        and (name or filters)
+        and "error" not in result
+        and result.get("data") in (None, [], "")
+    ):
+        params["type"] = "DATASET"
+        retry = _make_rucio_request(url, headers=headers, params=params)
+        if "error" not in retry and retry.get("data"):
+            retry["hint"] = (
+                "type=CONTAINER returned 0 results; showing DATASET results "
+                "instead. This scope appears to hold datasets, not containers."
+            )
+            return retry
+
+    return result
 
 
 @mcp.tool(description="List files within a Rucio dataset or container.")

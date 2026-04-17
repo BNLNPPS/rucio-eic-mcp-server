@@ -34,6 +34,7 @@ RUCIO_ACCOUNT = os.getenv("RUCIO_ACCOUNT", "rucioddm")
 RUCIO_USERNAME = os.getenv("RUCIO_USERNAME", "")
 RUCIO_PASSWORD = os.getenv("RUCIO_PASSWORD", "")
 RUCIO_AUTH_TYPE = os.getenv("RUCIO_AUTH_TYPE", "x509")  # "x509" or "userpass"
+RUCIO_VO = os.getenv("RUCIO_VO", "")  # required on multi-VO servers (e.g. BNL: "eic")
 TOKEN_FILE_PATH = os.getenv("TOKEN_FILE_PATH", "/tmp/rucio_eic_token.txt")
 RUCIO_URL = os.getenv("RUCIO_URL", "https://nprucio01.sdcc.bnl.gov:443")
 # Use system CA bundle by default; override with RUCIO_CA_BUNDLE if needed.
@@ -131,6 +132,8 @@ def _make_rucio_request(
 def _get_token_x509() -> dict:
     """Authenticate with Rucio via X509 proxy certificate."""
     headers = {"X-Rucio-Account": RUCIO_ACCOUNT}
+    if RUCIO_VO:
+        headers["X-Rucio-VO"] = RUCIO_VO
     try:
         cert = (CERT_PATH, CERT_PATH)
         response = requests.get(
@@ -155,6 +158,8 @@ def _get_token_userpass() -> dict:
         "X-Rucio-Username": RUCIO_USERNAME,
         "X-Rucio-Password": RUCIO_PASSWORD,
     }
+    if RUCIO_VO:
+        headers["X-Rucio-VO"] = RUCIO_VO
     try:
         response = requests.get(
             AUTH_USERPASS_URL, headers=headers, verify=CA_BUNDLE, timeout=15,

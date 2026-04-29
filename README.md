@@ -14,7 +14,7 @@ MCP server providing [Rucio](https://rucio.cern.ch/) data management tools for t
 | `get_account_usage` | Get storage usage for an account at a specific RSE |
 | `list_rses` | List all Rucio Storage Elements |
 | `get_rse_usage` | Get storage usage statistics for an RSE |
-| `list_rules` | List replication rules with optional filters |
+| `list_rules` | List replication rules with optional filters or for a specific DID |
 | `get_rule_locks` | Get replica lock details for a replication rule |
 | `list_file_replicas` | Find where file replicas are located across RSEs |
 | `extract_scope` | Parse an EIC DID string into scope and name |
@@ -32,6 +32,12 @@ For campaign queries, search explicitly in the `epic` scope:
 
 ```text
 list_dids(scope="epic", name="*26.04.1*", type="DATASET")
+```
+
+For managed data placement, query the replication rules for the DID:
+
+```text
+list_rules(did="epic:/RECO/26.04.1/epic_craterlake/SINGLE/gamma/100MeV/etaScan")
 ```
 
 Direct XRootD paths under `/volatile/eic/EPIC/...` correspond to the same

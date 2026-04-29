@@ -527,15 +527,27 @@ def get_rse_usage(rse: str) -> dict:
     return _make_rucio_request(url, headers=headers)
 
 
-@mcp.tool(description="List replication rules with optional filters (account, state).")
-def list_rules(filters: Optional[dict[str, str]] = None) -> dict:
+@mcp.tool(description="List replication rules with optional filters, including a specific DID by scope/name.")
+def list_rules(
+    scope: Optional[str] = None,
+    name: Optional[str] = None,
+    did: Optional[str] = None,
+    filters: Optional[dict[str, str]] = None,
+) -> dict:
     """
     Fetch replication rules, optionally filtered.
 
     Args:
+        scope: Optional Rucio scope for a specific DID, e.g. 'epic'.
+        name: Optional Rucio DID name for a specific DID, e.g.
+            '/RECO/26.04.1/epic_craterlake/SINGLE/gamma/100MeV/etaScan'.
+        did: Optional combined DID string. If provided without scope/name,
+            extract_scope() is used, so 'epic:/RECO/...' and
+            '/volatile/eic/EPIC/RECO/...' both work.
         filters: Optional dict of filters:
             - account: Filter by Rucio account.
             - state: Filter by rule state — 'O' (OK), 'R' (Replicating), 'S' (Stuck).
+            - rse_expression: Filter by destination RSE expression.
             Example: {"account": "wenaus", "state": "R"}
     """
     try:
@@ -543,7 +555,15 @@ def list_rules(filters: Optional[dict[str, str]] = None) -> dict:
     except RuntimeError as e:
         return {"error": str(e)}
 
-    params = filters if filters else {}
+    params = dict(filters) if filters else {}
+    if did and not (scope and name):
+        parsed = _extract_scope_eic(did)
+        scope = parsed["scope"]
+        name = parsed["name"]
+    if scope:
+        params["scope"] = scope
+    if name:
+        params["name"] = name
     return _make_rucio_request(RULES_URL, headers=headers, params=params)
 
 

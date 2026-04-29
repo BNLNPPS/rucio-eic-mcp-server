@@ -24,6 +24,17 @@ from urllib.parse import quote
 
 from mcp.server.fastmcp import FastMCP
 
+EPIC_CAMPAIGN_PREFIXES = (
+    "/RECO/",
+    "/FULL/",
+    "/SIM/",
+    "/EVGEN/",
+)
+EPIC_STORAGE_PREFIXES = (
+    "/volatile/eic/EPIC",
+    "/volatile/eic/epic",
+)
+
 
 # ---------------------------------------------------------------------------
 # Configuration from environment
@@ -227,6 +238,9 @@ def _extract_scope_eic(did: str) -> dict[str, str]:
     Extract scope and name from an EIC/ePIC DID string.
 
     EIC naming conventions:
+    - epic:/RECO/...             — JLab ePIC campaign datasets
+    - /RECO/...                  — JLab ePIC campaign dataset names in epic scope
+    - /volatile/eic/EPIC/RECO/... — XRootD path corresponding to epic:/RECO/...
     - group.EIC:dataset_name       — ePIC production datasets
     - group.daq:swf.NNNNNN.run    — streaming workflow / DAQ datasets
     - user.<username>:name         — user datasets
@@ -239,6 +253,18 @@ def _extract_scope_eic(did: str) -> dict[str, str]:
     if ":" in did:
         scope, name = did.split(":", 1)
         return {"scope": scope, "name": name}
+
+    # JLab ePIC campaign DIDs use the flat "epic" scope with path-like
+    # names such as /RECO/26.04.1/epic_craterlake/....
+    if did.startswith(EPIC_CAMPAIGN_PREFIXES):
+        return {"scope": "epic", "name": did}
+
+    # Convert common XRootD paths to the matching Rucio DID name.
+    for prefix in EPIC_STORAGE_PREFIXES:
+        if did.startswith(prefix + "/"):
+            name = did[len(prefix):]
+            if name.startswith(EPIC_CAMPAIGN_PREFIXES):
+                return {"scope": "epic", "name": name}
 
     # Path-based inference for EIC conventions
     if did.startswith("/eic/") or did.startswith("/EIC/"):

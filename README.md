@@ -19,6 +19,25 @@ MCP server providing [Rucio](https://rucio.cern.ch/) data management tools for t
 | `list_file_replicas` | Find where file replicas are located across RSEs |
 | `extract_scope` | Parse an EIC DID string into scope and name |
 
+## ePIC campaign scopes
+
+JLab ePIC production campaign datasets are commonly registered in the
+`epic` scope with path-like DID names, for example:
+
+```text
+epic:/RECO/26.04.1/epic_craterlake/SINGLE/mu-/10GeV/etaScan
+```
+
+For campaign queries, search explicitly in the `epic` scope:
+
+```text
+list_dids(scope="epic", name="*26.04.1*", type="DATASET")
+```
+
+Direct XRootD paths under `/volatile/eic/EPIC/...` correspond to the same
+Rucio DID names after stripping `/volatile/eic/EPIC`; for example
+`/volatile/eic/EPIC/RECO/26.04.1` maps to `epic:/RECO/26.04.1`.
+
 ## Requirements
 
 - Python 3.10+
